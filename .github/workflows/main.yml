@@ -1,5 +1,5 @@
 name: Build
- 
+
 on:
   push:
     branches:
@@ -53,7 +53,8 @@ jobs:
             ${{ hashFiles('Source/Icon.ico') != '' && format('--icon "{0}/Source/Icon.ico"', github.workspace) || '' }} \
             --add-data "$GITHUB_WORKSPACE/Source/*${{ matrix.sep }}Source" \
             --hidden-import requests \
-            --hidden-import dracopy
+            --hidden-import dracopy \
+            --collect-all tomli
 
       - name: Rename Executable
         shell: bash
