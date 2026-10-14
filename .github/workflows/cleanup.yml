@@ -1,0 +1,104 @@
+name: Cleanup Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_latest:
+        description: 'Сколько последних артефактов оставить (0 = удалить все)'
+        required: true
+        default: '0'
+      name_filter:
+        description: 'Фильтр по имени (пусто = все артефакты)'
+        required: false
+        default: ''
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP_LATEST: ${{ github.event.inputs.keep_latest }}
+          NAME_FILTER: ${{ github.event.inputs.name_filter }}
+        run: |
+          set -euo pipefail
+
+          echo "Репозиторий: $REPO"
+          echo "Оставить последних: $KEEP_LATEST"
+          echo "Фильтр по имени: '${NAME_FILTER}'"
+
+          # Забираем все артефакты (по 100 за страницу, идём по всем страницам)
+          PAGE=1
+          ALL_IDS=""
+          ALL_NAMES=""
+
+          while : ; do
+            RESP=$(gh api "repos/${REPO}/actions/artifacts?per_page=100&page=${PAGE}")
+
+            COUNT=$(echo "$RESP" | jq '.artifacts | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+
+            # Фильтруем по имени, если задан фильтр
+            if [ -n "$NAME_FILTER" ]; then
+              IDS=$(echo "$RESP" | jq -r --arg f "$NAME_FILTER" \
+                '.artifacts[] | select(.name==$f) | .id')
+            else
+              IDS=$(echo "$RESP" | jq -r '.artifacts[].id')
+            fi
+
+            if [ -n "$IDS" ]; then
+              ALL_IDS="${ALL_IDS}${IDS}"$'\n'
+            fi
+
+            PAGE=$((PAGE + 1))
+          done
+
+          # Убираем пустые строки
+          ALL_IDS=$(echo "$ALL_IDS" | sed '/^$/d')
+
+          if [ -z "$ALL_IDS" ]; then
+            echo "Нечего удалять — артефактов по фильтру нет."
+            exit 0
+          fi
+
+          TOTAL=$(echo "$ALL_IDS" | wc -l)
+          echo "Найдено артефактов: $TOTAL"
+
+          # Если нужно оставить последние N — отрезаем их (API отдаёт новые первыми)
+          if [ "$KEEP_LATEST" -gt 0 ]; then
+            TO_DELETE=$(echo "$ALL_IDS" | tail -n +$((KEEP_LATEST + 1)))
+            SKIP=$(echo "$ALL_IDS" | head -n "$KEEP_LATEST")
+            echo "Оставляю:"
+            echo "$SKIP"
+          else
+            TO_DELETE="$ALL_IDS"
+          fi
+
+          if [ -z "$TO_DELETE" ]; then
+            echo "Нечего удалять — оставляем все."
+            exit 0
+          fi
+
+          DEL_COUNT=0
+          while IFS= read -r ID; do
+            [ -z "$ID" ] && continue
+            echo "Удаляю артефакт id=$ID"
+            if gh api --method DELETE "repos/${REPO}/actions/artifacts/${ID}"; then
+              DEL_COUNT=$((DEL_COUNT + 1))
+            else
+              echo "  ⚠️ не удалось удалить id=$ID (возможно, уже удалён)"
+            fi
+          done <<< "$TO_DELETE"
+
+          echo ""
+          echo "=== Готово. Удалено: $DEL_COUNT из $TOTAL ==="
+          echo "Напоминание: квота пересчитается в течение 6-12 часов."
